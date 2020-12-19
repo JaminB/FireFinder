@@ -1,22 +1,61 @@
-import os
+import argparse
 import csv
 import json
 import operator
+import os
 from datetime import datetime
 from math import sin, cos, sqrt, atan2, radians
 from sys import stderr
 from typing import List, Optional
 from zlib import adler32
 
+import geojson
 import requests
+import tabulate
 
+FUZZY_MAP = {
+    0: (111, 'km'),
+    1: (11.1, 'km'),
+    2: (1.11, 'km'),
+    3: (111, 'm'),
+    4: (11.1, 'm'),
+    5: (1.11, 'm'),
+    6: (0.111, 'm'),
+    7: (1.11, 'cm'),
+    8: (1.11, 'm')
+}
 
 class WildFire:
     """
     Simple struct representing the relevant details from a wildfire
     """
 
-    def __init__(self, lat, lon, date, time, confidence):
+    def __init__(self, lat, lon, date, time, confidence, fuzziness=2):
+        """
+
+        :param lat: The latitude of the wildfire
+        :param lon: The longitude of the wildfire
+        :param date: The YYYY-MM-DD
+        :param time: The HHMM
+        :param confidence: String or integer value representing the level of confidence that there is a wildfire at the
+                           specified coordinates
+        :param fuzziness: Value between 0 and 8. This parameter is used to merge wild-fires together that are close
+                          geographically; the higher the number the more exact coordinates have to be to merge two
+                          fires:
+
+                            decimal  degrees    distance
+                            places
+                            -------------------------------
+                            0        1.0        111 km
+                            1        0.1        11.1 km
+                            2        0.01       1.11 km
+                            3        0.001      111 m
+                            4        0.0001     11.1 m
+                            5        0.00001    1.11 m
+                            6        0.000001   0.111 m
+                            7        0.0000001  1.11 cm
+                            8        0.00000001 1.11 mm
+        """
         self.lat = float(lat)
         self.lon = float(lon)
         self.date = date
@@ -24,13 +63,13 @@ class WildFire:
         self.datetime = datetime.strptime(f'{date} {time}', '%Y-%m-%d %H%M')
         self.confidence = confidence
         self.seen_count = 1
-        self.fuzzy_hash = adler32(str(round(self.lat, 2) + round(self.lon, 2)).encode('ascii'))
+        self.fuzzy_hash = adler32(str(round(self.lat, fuzziness) + round(self.lon, fuzziness)).encode('ascii'))
 
     @classmethod
-    def create_from_csv_row(cls, row):
+    def create_from_csv_row(cls, row, fuzziness=2):
         latitude, longitude, bright_ti4, scan, track, acq_date, acq_time, satellite, \
         confidence, version, bright_ti5, frp, daynight = row
-        return cls(latitude, longitude, acq_date, acq_time, confidence)
+        return cls(latitude, longitude, acq_date, acq_time, confidence, fuzziness=fuzziness)
 
     def update_seen_count(self):
         self.seen_count += 1
@@ -47,6 +86,21 @@ class WildFire:
                 hash=self.fuzzy_hash
             )
         )
+
+    def to_geojson_feature(self):
+        return geojson.Feature(
+            geometry=geojson.MultiPoint(
+                coordinates=[(self.lat, self.lon)]
+            ),
+            properties=dict(
+                LATITUDE=self.lat,
+                LONGITUDE=self.lon,
+                ACQ_DATE=self.date,
+                ACQ_TIME=str(self.time)
+            ))
+
+    def to_tabular_feature(self):
+        return [self.seen_count, str(self.datetime), self.lat, self.lon]
 
 
 # Open up our config.json
@@ -162,12 +216,15 @@ def is_coordinate_in_bounding_box(lat: float, lon: float) -> bool:
     return x1 < x < x2 and y1 < y < y2
 
 
-def get_wild_fires(honor_bounding_box=True) -> List[WildFire]:
+def get_wild_fires(honor_bounding_box=True, fuzziness=2) -> List[WildFire]:
     """
     Extract the wild fire data from all the CSVs currently saved to disk
 
     :param honor_bounding_box: If set to True, this function will only return values within that bounding box.
     Otherwise, the scope is determined by the downloaded datasets
+    :param fuzziness: Value between 0 and 8. This parameter is used to merge wild-fires together that are close
+                  `geographically; the higher the number the more exact coordinates have to be to merge two
+                  fires
     :return A list of Wildfire instances
     """
     wild_fires = []
@@ -181,26 +238,30 @@ def get_wild_fires(honor_bounding_box=True) -> List[WildFire]:
                 try:
                     if honor_bounding_box:
                         if is_coordinate_in_bounding_box(float(latitude), float(longitude)):
-                            wild_fires.append(WildFire.create_from_csv_row(row))
+                            wild_fires.append(WildFire.create_from_csv_row(row, fuzziness=fuzziness))
                     else:
-                        wild_fires.append(WildFire.create_from_csv_row(row))
+                        wild_fires.append(WildFire.create_from_csv_row(row, fuzziness=fuzziness))
                 except ValueError:
                     # This is most likely the header row
                     continue
     return wild_fires
 
 
-def merge_wild_fires(max_distance_radius=10, honor_bounding_box=True) -> List[WildFire]:
+def merge_wild_fires(honor_bounding_box=True, fuzziness=2) -> List[WildFire]:
     """
     Identify fires spotted more than once by different satellites or on different days.
     Additionally, results are de-duplicated using a "fuzzy hashing" methodology.
 
 
-    :param max_distance_radius: Fires within this radius will be considered the same wildfire
+    :param fuzziness: Value between 0 and 8. This parameter is used to merge wild-fires together that are close
+                      `geographically; the higher the number the more exact coordinates have to be to merge two
+                      fires
     :param honor_bounding_box: If set to True, this function will only return values within that bounding box.
     Otherwise, the scope is determined by the downloaded datasets
     :return: A list of Wildfire instances
     """
+    tabular_headers = ['Seen Count', 'First Seen Date', 'Latitude', 'Longitude']
+    tabular_rows = []
 
     def get_first_match(fuzzy_hash: int) -> Optional[WildFire]:
         """
@@ -214,8 +275,8 @@ def merge_wild_fires(max_distance_radius=10, honor_bounding_box=True) -> List[Wi
                 return candidate
         return None
 
-    original_wildfires = get_wild_fires(honor_bounding_box=honor_bounding_box)
-    comparison_wildfires = get_wild_fires(honor_bounding_box=honor_bounding_box)
+    original_wildfires = get_wild_fires(honor_bounding_box=honor_bounding_box, fuzziness=fuzziness)
+    comparison_wildfires = get_wild_fires(honor_bounding_box=honor_bounding_box, fuzziness=fuzziness)
     deduplicated_wildfires = []
 
     # Iterate through our wild fires within our bounding box
@@ -227,9 +288,7 @@ def merge_wild_fires(max_distance_radius=10, honor_bounding_box=True) -> List[Wi
         for j, compare_wild_fire in enumerate(comparison_wildfires):
             if i == j:
                 continue
-            distance_between_fires = get_distance_between_two_points(wild_fire.lat, wild_fire.lon,
-                                                                     compare_wild_fire.lat, compare_wild_fire.lon)
-            if distance_between_fires <= max_distance_radius:
+            if wild_fire.fuzzy_hash == compare_wild_fire.fuzzy_hash:
                 wild_fire.update_seen_count()
             else:
                 temp_comparison_wildfires.append(compare_wild_fire)
@@ -239,7 +298,7 @@ def merge_wild_fires(max_distance_radius=10, honor_bounding_box=True) -> List[Wi
     original_wildfires = sorted(original_wildfires, key=operator.attrgetter('seen_count'), reverse=True)
 
     # Identify unique values using our fuzzy hashing method
-    # (fuzzy hash represents coordinates up to 2 significant digits 1.11km)
+    # (fuzzy hash represents coordinates up to n significant digits.)
     # Add our de-duplicated results to a new list
     unique_hashes = set([wild_fire.fuzzy_hash for wild_fire in original_wildfires])
     for hash in unique_hashes:
@@ -249,12 +308,48 @@ def merge_wild_fires(max_distance_radius=10, honor_bounding_box=True) -> List[Wi
         deduplicated_wildfires.append(match)
     # Sort by seen_count descending
     deduplicated_wildfires = sorted(deduplicated_wildfires, key=operator.attrgetter('seen_count'), reverse=True)
+
+    for deduped_wild_fire in deduplicated_wildfires:
+        tabular_rows.append(deduped_wild_fire.to_tabular_feature())
+    distance, unit = FUZZY_MAP.get(fuzziness)
+    print(tabulate.tabulate(tabular_rows, headers=tabular_headers))
+    print('\n')
+    print(f'Fires must be within {distance} {unit} of one another to be merged.')
+    print(f'Using this method to merge {len(original_wildfires)} into {len(deduplicated_wildfires)} wildfires.')
+
     return deduplicated_wildfires
 
 
 if __name__ == '__main__':
-    download_first = False
-    if download_first:
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument('output_file', action="store", type=str,
+                            help='The path to where the geojson file will be written.')
+    arg_parser.add_argument(
+        '--download-csvs', dest='download_csvs', action='store_true', help='Download new CSV files; delete old ones.'
+    )
+    arg_parser.add_argument(
+        '--config-file', dest='config_file', action='store_true', default='config.json',
+        help='The path to the config.json file.'
+    )
+    arg_parser.add_argument(
+        '--merge-sensitivity', dest='merge_sensitivity', type=int, default=2,
+        help='Value between 0 and 8: '
+             '0=111 km; 1=11.1 km; 2=1.11 km; 3=111 m; 4=11.1 m; 5=1.11 m; 6=0.111 m; 7=1.11 cm; 8=1.11 mm'
+    )
+
+    args = arg_parser.parse_args()
+    CONFIG = _load_config(args.config_file)
+    if args.download_csvs:
+        print('Downloading datasets...')
         download_datasets()
-    for wildfire in merge_wild_fires():
-        print(wildfire)
+
+    features = []
+    for wild_fire in merge_wild_fires(honor_bounding_box=True, fuzziness=args.merge_sensitivity):
+        features.append(wild_fire.to_geojson_feature())
+    with open(args.output_file, 'w') as geojson_output_f:
+        geojson_output_f.write(json.dumps(geojson.FeatureCollection(features=features), indent=1))
+    print('\n' + '-' * 60)
+    print(f'Config File: {args.config_file}')
+    print(f'Output File: {args.output_file}')
+    print('-' * 60)
+
