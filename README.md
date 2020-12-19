@@ -55,7 +55,9 @@ python3 fire_finder.py --merge-sensitivity=2 my_output.json
 ```
 
 2. Don't merge wildfires at all.
+```bash
 python3 fire_finder.py --merge-sensitivity=8 my_output.json
+```
    
 #### Sample Output
 ```buildoutcfg
