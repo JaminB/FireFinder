@@ -59,7 +59,7 @@ python3 fire_finder.py --merge-sensitivity=2 my_output.json
 python3 fire_finder.py --merge-sensitivity=8 my_output.json
 ```
    
-#### Sample Output
+#### Sample Console Output
 ```buildoutcfg
   Seen Count  First Seen Date        Latitude    Longitude
 ------------  -------------------  ----------  -----------
