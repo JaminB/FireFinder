@@ -58,6 +58,10 @@ python3 fire_finder.py --merge-sensitivity=2 my_output.json
 ```bash
 python3 fire_finder.py --merge-sensitivity=8 my_output.json
 ```
+
+3. Download CSVs first (refresh data if its been updated)
+python3 fire_finder.py --download-csvs my_output.json
+
    
 #### Sample Console Output
 ```buildoutcfg
