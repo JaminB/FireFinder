@@ -1,9 +1,12 @@
+import os
 import csv
 import json
-import os
-from typing import List
+import operator
+from datetime import datetime
 from math import sin, cos, sqrt, atan2, radians
 from sys import stderr
+from typing import List, Optional
+from zlib import adler32
 
 import requests
 
@@ -14,12 +17,14 @@ class WildFire:
     """
 
     def __init__(self, lat, lon, date, time, confidence):
-        self.lat = lat
-        self.lon = lon
+        self.lat = float(lat)
+        self.lon = float(lon)
         self.date = date
         self.time = time
+        self.datetime = datetime.strptime(f'{date} {time}', '%Y-%m-%d %H%M')
         self.confidence = confidence
         self.seen_count = 1
+        self.fuzzy_hash = adler32(str(round(self.lat, 2) + round(self.lon, 2)).encode('ascii'))
 
     @classmethod
     def create_from_csv_row(cls, row):
@@ -38,7 +43,8 @@ class WildFire:
                 date=str(self.date),
                 time=str(self.time),
                 confidence=self.confidence,
-                seen_count=self.seen_count
+                seen_count=self.seen_count,
+                hash=self.fuzzy_hash
             )
         )
 
@@ -162,6 +168,7 @@ def get_wild_fires(honor_bounding_box=True) -> List[WildFire]:
 
     :param honor_bounding_box: If set to True, this function will only return values within that bounding box.
     Otherwise, the scope is determined by the downloaded datasets
+    :return A list of Wildfire instances
     """
     wild_fires = []
     csv_directory = CONFIG.get('csv_output_directory', 'csvs')
@@ -183,17 +190,38 @@ def get_wild_fires(honor_bounding_box=True) -> List[WildFire]:
     return wild_fires
 
 
-def merge_wild_fires(max_distance_radius=10) -> List[WildFire]:
+def merge_wild_fires(max_distance_radius=10, honor_bounding_box=True) -> List[WildFire]:
     """
-    Identify fires spotted more than once by different satellites and on different days.
+    Identify fires spotted more than once by different satellites or on different days.
+    Additionally, results are de-duplicated using a "fuzzy hashing" methodology.
 
-    Deduplicate results using the same logic (Not yet implemented)
 
     :param max_distance_radius: Fires within this radius will be considered the same wildfire
-    :return:
+    :param honor_bounding_box: If set to True, this function will only return values within that bounding box.
+    Otherwise, the scope is determined by the downloaded datasets
+    :return: A list of Wildfire instances
     """
-    original_wildfires = get_wild_fires()
-    comparison_wildfires = get_wild_fires()
+
+    def get_first_match(fuzzy_hash: int) -> Optional[WildFire]:
+        """
+        Locates the first instance of a wildfire in our list that has the same hash as the one given
+
+        :param fuzzy_hash: The hash created that represents the VERY approximate location of a wildfire
+        :return: A wildfire class instance or None if no matches found
+        """
+        for candidate in original_wildfires:
+            if candidate.fuzzy_hash == fuzzy_hash:
+                return candidate
+        return None
+
+    original_wildfires = get_wild_fires(honor_bounding_box=honor_bounding_box)
+    comparison_wildfires = get_wild_fires(honor_bounding_box=honor_bounding_box)
+    deduplicated_wildfires = []
+
+    # Iterate through our wild fires within our bounding box
+    # For every fire, check to see how close it is to every other fire
+    # If it is within max_distance_radius km then we update the seen count
+    # Remove any other instances from our comparison list that were within the specified distance for future iterations
     for i, wild_fire in enumerate(original_wildfires):
         temp_comparison_wildfires = []
         for j, compare_wild_fire in enumerate(comparison_wildfires):
@@ -207,11 +235,25 @@ def merge_wild_fires(max_distance_radius=10) -> List[WildFire]:
                 temp_comparison_wildfires.append(compare_wild_fire)
         comparison_wildfires = temp_comparison_wildfires
 
-    return original_wildfires
+    # Sort descending by seen count
+    original_wildfires = sorted(original_wildfires, key=operator.attrgetter('seen_count'), reverse=True)
+
+    # Identify unique values using our fuzzy hashing method
+    # (fuzzy hash represents coordinates up to 2 significant digits 1.11km)
+    # Add our de-duplicated results to a new list
+    unique_hashes = set([wild_fire.fuzzy_hash for wild_fire in original_wildfires])
+    for hash in unique_hashes:
+        match = get_first_match(hash)
+        if not match:
+            continue
+        deduplicated_wildfires.append(match)
+    # Sort by seen_count descending
+    deduplicated_wildfires = sorted(deduplicated_wildfires, key=operator.attrgetter('seen_count'), reverse=True)
+    return deduplicated_wildfires
 
 
 if __name__ == '__main__':
-    download_first = True
+    download_first = False
     if download_first:
         download_datasets()
     for wildfire in merge_wild_fires():
