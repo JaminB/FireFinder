@@ -1,0 +1,10 @@
+{
+  "country_bounding_box": [6.5, -84, 10, -76.5],
+  "csv_urls": [
+    "https://firms.modaps.eosdis.nasa.gov/data/active_fire/c6/csv/MODIS_C6_Global_7d.csv",
+    "https://firms.modaps.eosdis.nasa.gov/data/active_fire/suomi-npp-viirs-c2/csv/SUOMI_VIIRS_C2_Global_7d.csv",
+    "https://firms.modaps.eosdis.nasa.gov/data/active_fire/noaa-20-viirs-c2/csv/J1_VIIRS_C2_Global_7d.csv"
+  ],
+  "csv_output_directory": "csvs/",
+  "status_messages": true
+}
