@@ -90,7 +90,7 @@ class WildFire:
     def to_geojson_feature(self):
         return geojson.Feature(
             geometry=geojson.MultiPoint(
-                coordinates=[(self.lat, self.lon)]
+                coordinates=[(self.lon, self.lat)]
             ),
             properties=dict(
                 LATITUDE=self.lat,
